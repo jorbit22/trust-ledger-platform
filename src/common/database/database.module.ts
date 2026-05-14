@@ -2,9 +2,6 @@ import { Global, Module } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Pool } from 'pg';
 
-// @Global makes PG_POOL available to every module in the app
-// without needing to import DatabaseModule in each one
-// This ensures the entire application shares one connection pool
 @Global()
 @Module({
   providers: [
@@ -12,15 +9,25 @@ import { Pool } from 'pg';
       provide: 'PG_POOL',
       useFactory: (config: ConfigService) => {
         const isProduction = config.get('NODE_ENV') === 'production';
-        return new Pool({
+
+        const pool = new Pool({
           connectionString: config.get<string>('DATABASE_URL'),
-          // SSL required in production (Aiven) but skipped locally
-          // to avoid certificate errors during development
           ssl: isProduction ? { rejectUnauthorized: false } : false,
           max: 20,
-          idleTimeoutMillis: 30000,
-          connectionTimeoutMillis: 5000,
+          // How long a client can sit idle before being closed
+          // Aiven free tier drops connections — we close them first
+          idleTimeoutMillis: 60000,
+          connectionTimeoutMillis: 10000,
+          // Automatically reconnect if connection is lost
+          allowExitOnIdle: false,
         });
+
+        // Log pool errors so we know when connections drop
+        pool.on('error', (err) => {
+          console.error('PG Pool error:', err.message);
+        });
+
+        return pool;
       },
       inject: [ConfigService],
     },
