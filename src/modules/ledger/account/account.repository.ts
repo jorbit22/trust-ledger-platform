@@ -1,34 +1,48 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 import { Pool, PoolClient } from 'pg';
 import { BaseRepository } from '../../../common/database/base.repository';
 import { AppLogger } from '../../../common/logger/logger.service';
 import { Account, AccountCategory, AccountStatus } from './account.entity';
 
+function mapRowToAccount(row: any): Account {
+  return {
+    id: row.id,
+    userId: row.user_id,
+    category: row.category,
+    status: row.status,
+    currency: row.currency,
+    balanceKobo: BigInt(row.balance_kobo),
+    holdBalanceKobo: BigInt(row.hold_balance_kobo),
+    glAccountCode: row.gl_account_code,
+    version: parseInt(row.version),
+    kycTier: parseInt(row.kyc_tier),
+    dailyLimitKobo: BigInt(row.daily_limit_kobo),
+    createdAt: new Date(row.created_at),
+    updatedAt: new Date(row.updated_at),
+  };
+}
+
 @Injectable()
 export class AccountRepository extends BaseRepository {
-  constructor(pool: Pool, logger: AppLogger) {
+  constructor(@Inject('PG_POOL') pool: Pool, logger: AppLogger) {
     super(pool, logger);
   }
 
   async findById(id: string): Promise<Account | null> {
-    const rows = await this.query<Account>(
-      `SELECT * FROM accounts WHERE id = $1`,
-      [id],
-    );
-    return rows[0] ?? null;
+    const rows = await this.query<any>(`SELECT * FROM accounts WHERE id = $1`, [
+      id,
+    ]);
+    return rows[0] ? mapRowToAccount(rows[0]) : null;
   }
 
   async findByUserId(userId: string): Promise<Account[]> {
-    return this.query<Account>(
+    const rows = await this.query<any>(
       `SELECT * FROM accounts WHERE user_id = $1 ORDER BY created_at ASC`,
       [userId],
     );
+    return rows.map(mapRowToAccount);
   }
 
-  // Locks multiple rows for the duration of the calling transaction
-  // IDs are sorted before locking — if two transfers involve the same two accounts
-  // in opposite directions, both will always lock in the same order
-  // preventing them from blocking each other indefinitely (deadlock)
   async findManyForUpdate(
     ids: string[],
     client: PoolClient,
@@ -38,7 +52,7 @@ export class AccountRepository extends BaseRepository {
       `SELECT * FROM accounts WHERE id = ANY($1) FOR UPDATE`,
       [sortedIds],
     );
-    return result.rows;
+    return result.rows.map(mapRowToAccount);
   }
 
   async create(
@@ -70,14 +84,11 @@ export class AccountRepository extends BaseRepository {
 
     const rows = client
       ? (await client.query(sql, params)).rows
-      : await this.query<Account>(sql, params);
+      : await this.query<any>(sql, params);
 
-    return rows[0];
+    return mapRowToAccount(rows[0]);
   }
 
-  // Combines balance and hold balance into one SQL statement
-  // This eliminates the window between two separate updates where
-  // the account would be in a temporarily inconsistent state
   async updateBalances(
     id: string,
     updates: { balanceKobo?: bigint; holdBalanceKobo?: bigint },
@@ -107,8 +118,6 @@ export class AccountRepository extends BaseRepository {
       params,
     );
 
-    // Returns false if no row was updated
-    // means another process already changed this account — caller must retry
     return result.rowCount === 1;
   }
 
@@ -127,9 +136,7 @@ export class AccountRepository extends BaseRepository {
        RETURNING *`,
       [status, id, currentVersion],
     );
-
-    // Returns null if no row matched — means version conflict
-    return result.rows[0] ?? null;
+    return result.rows[0] ? mapRowToAccount(result.rows[0]) : null;
   }
 
   async updateStatusTransactional(
