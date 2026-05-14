@@ -23,16 +23,35 @@ export abstract class BaseRepository {
 
   protected async query<T>(sql: string, params: unknown[] = []): Promise<T[]> {
     const start = Date.now();
-    const client = await this.pool.connect();
 
     try {
-      await this.stampSession(client);
-      const result = await client.query(sql, params);
+      return await this.executeQuery<T>(sql, params);
+    } catch (error: any) {
+      // Aiven free tier drops idle connections
+      // Retry once on connection timeout before giving up
+      if (
+        error.message?.includes('Connection terminated') ||
+        error.message?.includes('connection timeout')
+      ) {
+        this.logger.warn('db.query.retry', { sql: sql.substring(0, 100) });
+        return await this.executeQuery<T>(sql, params);
+      }
+      throw error;
+    } finally {
       this.logger.logQuery(sql, Date.now() - start);
+    }
+  }
+
+  private async executeQuery<T>(sql: string, params: unknown[]): Promise<T[]> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('SELECT set_config($1, $2, true)', [
+        'app.trace_id',
+        RequestContextStore.getTraceId(),
+      ]);
+      const result = await client.query(sql, params);
       return result.rows as T[];
     } catch (error) {
-      // Log the SQL alongside the error so we know exactly which
-      // query failed during an incident — not just that something failed
       this.logger.error('db.query.failed', { error: error as Error, sql });
       throw error;
     } finally {
