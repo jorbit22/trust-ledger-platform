@@ -1,18 +1,19 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { APP_INTERCEPTOR } from '@nestjs/core';
+import { DatabaseModule } from './common/database/database.module';
 import { TraceInterceptor } from './common/interceptors/trace.interceptor';
 import { AppLogger } from './common/logger/logger.service';
+import { LedgerModule } from './modules/ledger/ledger.module';
 
-// The root module — every request flows through the TraceInterceptor
-// before reaching any business logic anywhere in the system
 @Module({
   imports: [
-    // Makes .env variables available everywhere via process.env
     ConfigModule.forRoot({ isGlobal: true }),
+    // DatabaseModule must come before any module that uses PG_POOL
+    DatabaseModule,
+    LedgerModule,
   ],
   providers: [
-    // Registers TraceInterceptor globally — no need to add it to each module
     {
       provide: APP_INTERCEPTOR,
       useClass: TraceInterceptor,
