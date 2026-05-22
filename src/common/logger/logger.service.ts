@@ -97,11 +97,17 @@ export class AppLogger implements LoggerService {
   }
 
   error(msg: string, stack?: any, context?: string): void {
-    this.write(
-      'error',
-      msg,
-      stack instanceof Error ? stack : { stack, context },
-    );
+    if (stack instanceof Error) {
+      this.write('error', msg, stack);
+    } else if (typeof stack === 'object' && stack !== null) {
+      this.write('error', msg, {
+        error_message: stack.message ?? JSON.stringify(stack),
+        stack: stack.stack,
+        context,
+      });
+    } else {
+      this.write('error', msg, { stack, context });
+    }
   }
 
   logQuery(sql: string, durationMs: number): void {

@@ -1,58 +1,29 @@
+import { Inject, Injectable } from '@nestjs/common';
 import { Pool, PoolClient } from 'pg';
 import { AppLogger } from '../logger/logger.service';
 import { RequestContextStore } from '../context/request-context';
 
-// Every repository in the system extends this class
-// It guarantees traceability, safe session stamping, and atomic
-// event writing are handled consistently across all database operations
 export abstract class BaseRepository {
   constructor(
     protected readonly pool: Pool,
     protected readonly logger: AppLogger,
   ) {}
 
-  // Stamps the PostgreSQL session with the current trace ID
-  // Using set_config with parameters prevents any possibility of SQL injection
-  // even though trace IDs are already validated as UUIDs at the gateway
-  private async stampSession(client: PoolClient): Promise<void> {
-    await client.query('SELECT set_config($1, $2, true)', [
-      'app.trace_id',
-      RequestContextStore.getTraceId(),
-    ]);
-  }
-
+  // Simple queries do not stamp the session — that would double every round trip
+  // Session stamping only happens inside transactions where it matters for auditing
   protected async query<T>(sql: string, params: unknown[] = []): Promise<T[]> {
     const start = Date.now();
-
-    try {
-      return await this.executeQuery<T>(sql, params);
-    } catch (error: any) {
-      // Aiven free tier drops idle connections
-      // Retry once on connection timeout before giving up
-      if (
-        error.message?.includes('Connection terminated') ||
-        error.message?.includes('connection timeout')
-      ) {
-        this.logger.warn('db.query.retry', { sql: sql.substring(0, 100) });
-        return await this.executeQuery<T>(sql, params);
-      }
-      throw error;
-    } finally {
-      this.logger.logQuery(sql, Date.now() - start);
-    }
-  }
-
-  private async executeQuery<T>(sql: string, params: unknown[]): Promise<T[]> {
     const client = await this.pool.connect();
+
     try {
-      await client.query('SELECT set_config($1, $2, true)', [
-        'app.trace_id',
-        RequestContextStore.getTraceId(),
-      ]);
       const result = await client.query(sql, params);
+      this.logger.logQuery(sql, Date.now() - start);
       return result.rows as T[];
-    } catch (error) {
-      this.logger.error('db.query.failed', { error: error as Error, sql });
+    } catch (error: any) {
+      this.logger.error('db.query.failed', {
+        error_message: error.message,
+        sql: sql.substring(0, 150),
+      });
       throw error;
     } finally {
       client.release();
@@ -66,26 +37,31 @@ export abstract class BaseRepository {
 
     try {
       await client.query('BEGIN');
-      await this.stampSession(client);
+
+      // Stamp session inside transaction only — this is where DB-level
+      // audit trails matter, not on simple reads
+      await client.query('SELECT set_config($1, $2, true)', [
+        'app.trace_id',
+        RequestContextStore.getTraceId(),
+      ]);
 
       const result = await fn(client);
-
       await client.query('COMMIT');
       return result;
-    } catch (error) {
+    } catch (error: any) {
       await client.query('ROLLBACK');
-      this.logger.error('db.transaction.failed', error as Error);
+      this.logger.error('db.transaction.failed', {
+        error_message: error.message,
+        stack: error.stack,
+      });
       throw error;
     } finally {
       client.release();
     }
   }
 
-  // Writes a business operation and its outbox event atomically
-  // If Kafka is down, the event is safely stored and sent later —
-  // the customer's money never disappears silently (F-004)
-  // Full context (trace + user + ip) is captured so the event stream
-  // tells the complete story without joining other tables
+  // Writes business data and outbox event atomically in one transaction
+  // If Kafka is down the event is safely stored and sent later
   protected async withOutbox<T>(
     fn: (client: PoolClient) => Promise<T>,
     event: {
