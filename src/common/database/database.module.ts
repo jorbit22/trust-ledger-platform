@@ -13,16 +13,15 @@ import { Pool } from 'pg';
         const pool = new Pool({
           connectionString: config.get<string>('DATABASE_URL'),
           ssl: isProduction ? { rejectUnauthorized: false } : false,
-          max: 20,
-          // How long a client can sit idle before being closed
-          // Aiven free tier drops connections — we close them first
+          // 5 is enough for development — Aiven free tier has 25 total
+          // High max causes connection exhaustion when pool fills up
+          max: 5,
           idleTimeoutMillis: 60000,
-          connectionTimeoutMillis: 10000,
-          // Automatically reconnect if connection is lost
+          // Fail fast — do not wait 10s for a connection that is not coming
+          connectionTimeoutMillis: 5000,
           allowExitOnIdle: false,
         });
 
-        // Log pool errors so we know when connections drop
         pool.on('error', (err) => {
           console.error('PG Pool error:', err.message);
         });

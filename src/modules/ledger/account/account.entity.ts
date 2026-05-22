@@ -43,9 +43,3 @@ export function getAvailableBalance(account: Account): bigint {
 export function canTransact(account: Account): boolean {
   return account.status === AccountStatus.ACTIVE;
 }
-
-// JavaScript's JSON.stringify does not know how to handle bigint
-// Without this patch every API response containing an account would crash
-(BigInt.prototype as any).toJSON = function () {
-  return this.toString();
-};
