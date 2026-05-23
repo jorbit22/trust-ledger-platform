@@ -70,14 +70,14 @@ Every request, log line, database query, and Kafka message carries a `traceId` a
 - Request trace context using AsyncLocalStorage — frozen on entry, shared across entire async chain
 - Trace interceptor — captures or generates `X-Trace-ID`, validates format, extracts real client IP behind proxies
 - Structured JSON logger — NDPR-compliant field redaction, Error stack preserved, circular reference safe
-- Base repository — PostgreSQL session stamped with trace ID on every query
+- Base repository — PostgreSQL session stamped with trace ID on transactions only
 - Global exception filter — every error logged with full request context and database error details
 - Global shared connection pool — single pool across all modules
 
 ### Phase 1 — Database Schema
 
 - `accounts` — wallet registry with row-level security, KYC tiers, optimistic locking, hold balance
-- `journal_entries` — monthly partitioned double-entry ledger with deferred balance enforcement at commit time
+- `journal_entries` — monthly partitioned double-entry ledger with direction-aware deferred balance enforcement
 - `transaction_outbox` — guaranteed event delivery written atomically with business data
 - `idempotency_keys` — endpoint-scoped request deduplication with expiry
 - `audit_log` — append-only compliance trail, no UPDATE or DELETE permitted
@@ -92,17 +92,32 @@ Every request, log line, database query, and Kafka message carries a `traceId` a
 - Freeze, unfreeze, dormant status transitions with optimistic locking
 - All monetary values stored and returned in Kobo as strings
 
----
+### Phase 1 — Journal Posting Engine
+
+- Double-entry posting — every transaction produces one DEBIT and one CREDIT entry
+- Atomic execution — both entries, both balance updates in a single database transaction
+- Idempotency — duplicate requests return original entries without re-posting
+- Self-posting rejected — debit and credit accounts must always be distinct
+- Cross-currency rejected — no implicit FX conversion
+- Zero and negative amounts rejected at domain level before any DB lock
+- Deadlock prevention — accounts always locked in sorted UUID order
+- Balance integrity check — computes balance from journal entries and compares against cached balance
+- Direction-aware double-entry trigger — enforces balanced books at database commit time
 
 ## Live Endpoints
 
 ```
-POST   /api/accounts                Create a wallet account
-GET    /api/accounts/:id            Get account by ID
-GET    /api/accounts/user/:userId   Get all accounts for a user
-PATCH  /api/accounts/:id/freeze     Freeze an account
-PATCH  /api/accounts/:id/unfreeze   Unfreeze an account
-PATCH  /api/accounts/:id/dormant    Mark account dormant
+POST   /api/accounts                        Create a wallet account
+GET    /api/accounts/:id                    Get account by ID
+GET    /api/accounts/user/:userId           Get all accounts for a user
+PATCH  /api/accounts/:id/freeze             Freeze an account
+PATCH  /api/accounts/:id/unfreeze           Unfreeze an account
+PATCH  /api/accounts/:id/dormant            Mark account dormant
+
+POST   /api/journal/post                    Post a double-entry transaction
+GET    /api/journal/transaction/:id         Get entries by transaction ID
+GET    /api/journal/account/:id             Get entries by account ID
+GET    /api/journal/account/:id/verify      Verify cached balance against journal
 ```
 
 ---
@@ -196,14 +211,14 @@ certs/                     # Aiven CA certificate (gitignored)
 - [x] Phase 0 — Observability foundation
 - [x] Phase 1 — Database schema
 - [x] Phase 1 — Account domain
-- [ ] Phase 2 — Journal posting engine
-- [ ] Phase 3 — Payment processing and provider integration
-- [ ] Phase 4 — Reconciliation engine
-- [ ] Phase 5 — Liquidity manager
-- [ ] Phase 6 — KYC/AML engine
-- [ ] Phase 7 — React dashboard
-- [ ] Phase 8 — Chaos testing suite
-- [ ] Phase 9 — CI/CD and production hardening
+- [x] Phase 1 — Journal posting engine
+- [ ] Phase 2 — Payment processing and provider integration
+- [ ] Phase 3 — Reconciliation engine
+- [ ] Phase 4 — Liquidity manager
+- [ ] Phase 5 — KYC/AML engine
+- [ ] Phase 6 — React dashboard
+- [ ] Phase 7 — Chaos testing suite
+- [ ] Phase 8 — CI/CD and production hardening
 
 ---
 
